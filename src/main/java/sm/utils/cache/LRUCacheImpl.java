@@ -29,6 +29,8 @@ import java.util.logging.Logger;
  * @param <V>
  */
 public class LRUCacheImpl<K, V extends Closeable> implements LRUCache<K, V> {
+    
+    private static final long serialVersionUID = -6992448646407690164L;
 
     private static final Logger logger = Logger.getLogger(LRUCacheImpl.class);
 
@@ -93,7 +95,7 @@ public class LRUCacheImpl<K, V extends Closeable> implements LRUCache<K, V> {
                 //logger.info("Mark&Sweep found " + size + (size > 1 ? " resources" : " resource") + " to close.");
             //}
             // close resource asynchronously
-            executorService.execute(new ValueCloser<V>(entriesToBeEvicted));
+            executorService.execute(new ValueCloser<>(entriesToBeEvicted));
         }
 
     }
