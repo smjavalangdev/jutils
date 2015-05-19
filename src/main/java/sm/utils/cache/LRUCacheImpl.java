@@ -25,6 +25,8 @@ import java.util.logging.Logger;
  * Simple thread-safe implementation of a LRU cache that supports reference
  * counting and TTL(time-to-live)
  *
+ * Used Java 8 - functional syntax, not compatible with jdk < 8
+ * 
  * @author smdeveloper
  * @param <K>
  * @param <V>
