@@ -7,6 +7,7 @@ package sm.utils.cache;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -29,10 +30,10 @@ import java.util.logging.Logger;
  * @param <V>
  */
 public class LRUCacheImpl<K, V extends Closeable> implements LRUCache<K, V> {
-    
-    private static final long serialVersionUID = -6992448646407690164L;
 
-    private static final Logger logger = Logger.getLogger(LRUCacheImpl.class);
+    private static final long serialVersionUID = 6992448646407690164L;
+
+    private static final Logger logger = Logger.getLogger((LRUCacheImpl.class).getClass().getName());
 
     //Default time to live in millis
     private static final long DEFAULT_TTL = 10 * 1000; //millis
@@ -72,7 +73,7 @@ public class LRUCacheImpl<K, V extends Closeable> implements LRUCache<K, V> {
         try {
             writeLock.lock(); // Acquire the write lock first.
             //Trigger eviction thread before adding new elements
-            //entriesToBeEvicted = markAndSweep();
+            entriesToBeEvicted = findEntriesToEvict();
 
             //If the value is already marked for eviction then remove it from the 
             //eviction set.
@@ -91,8 +92,8 @@ public class LRUCacheImpl<K, V extends Closeable> implements LRUCache<K, V> {
 
         if (entriesToBeEvicted != null && entriesToBeEvicted.size() > 0) {
             //if (logger.isDebugEnabled()) {
-                //int size = entriesToBeEvicted.size();
-                //logger.info("Mark&Sweep found " + size + (size > 1 ? " resources" : " resource") + " to close.");
+            //int size = entriesToBeEvicted.size();
+            //logger.info("Mark&Sweep found " + size + (size > 1 ? " resources" : " resource") + " to close.");
             //}
             // close resource asynchronously
             executorService.execute(new ValueCloser<>(entriesToBeEvicted));
@@ -111,11 +112,167 @@ public class LRUCacheImpl<K, V extends Closeable> implements LRUCache<K, V> {
         this.put(key, value, DEFAULT_TTL);
     }
 
+    /**
+     * Get the matching value for the key. Since the entry has been fetched
+     * update time to live.
+     *
+     * @param key
+     * @return
+     */
+    @Override
+    public V get(final K key) {
+        try {
+            readLock.lock();
+            TTLValue ttlVal = ttlMap.get(key);
+            if (ttlVal != null) {
+                ttlVal.lastAccessedTimestamp.set(System.currentTimeMillis());
+                ttlVal.refCount.incrementAndGet();
+            }
+            return internalMap.get(key);
+        } finally {
+            readLock.unlock();
+        }
+
+    }
+
+    /**
+     * Returns all the values held in cache.
+     *
+     * @return
+     */
+    @Override
+    public Collection<V> getValues() {
+        try {
+            readLock.lock();
+            Collection<V> vals = new ArrayList();
+            vals.stream().forEach((v) -> {
+                vals.add(v);
+            });
+            return vals;
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    /**
+     * returns the size of the cache.
+     *
+     * @return
+     */
+    public int size() {
+        try {
+            readLock.lock();
+            return internalMap.size();
+        } finally {
+            readLock.unlock();
+        }
+
+    }
+
+    /**
+     * Remove the resource with specific key from the cache and close it
+     * synchronously afterwards.
+     *
+     * @param key the key of the cached resource
+     * @return the removed resource if exists
+     * @throws IOException exception thrown if there is any IO error
+     */
+    @Override
+    public V remove(final K key) throws IOException {
+        try {
+            writeLock.lock();
+            ttlMap.remove(key);
+            V val = internalMap.remove(key);
+            if (val != null) {
+                val.close();
+            }
+            return val;
+        } finally {
+            writeLock.unlock();
+        }
+
+    }
+
+    /**
+     * Remove all cached resource from the cache and close them asynchronously
+     * afterwards.
+     *
+     * @throws IOException exception thrown if there is any IO error
+     */
+    @Override
+    public void removeAll() throws IOException {
+        try {
+            writeLock.lock();
+            Collection<V> valsToClose = new HashSet<>();
+            valsToClose.addAll(internalMap.values());
+
+            if (valsToClose.size() > 0) {
+                for (V v : valsToClose) {
+                    v.close();
+                }
+            }
+            internalMap.clear();
+            ttlMap.clear();
+
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    /**
+     * Release the cached resource with specific key
+     *     
+     * This call will decrement the reference counter of the keyed resource.
+     *     
+     * @param key
+     */
+    @Override
+    public void release(K key) {
+        try {
+            readLock.lock();
+            TTLValue ttl = ttlMap.get(key);
+            if (ttl != null) {
+            // since the resource is released by calling thread
+            // let's decrement the reference counting
+                ttl.refCount.decrementAndGet();
+            }
+        } finally {
+            readLock.unlock();
+        }
+    }
+
     ////////////////////////////////////////////////////////////////////////////
     //
-    // Internal classes
+    // Internal classes & methods
     //
     ////////////////////////////////////////////////////////////////////////////
+    /**
+     * A lazy mark and sweep,
+     *
+     * a separate thread can also do this.
+     */
+    private Collection<V> findEntriesToEvict() {
+        Collection<V> valuesToClose = null;
+        evictionSet.clear();
+        Set<K> keys = ttlMap.keySet();
+        long currentTS = System.currentTimeMillis();
+        keys.stream().forEach((key) -> {
+            TTLValue ttl = ttlMap.get(key);
+            if (ttl.refCount.get() <= 0 && (currentTS - ttl.lastAccessedTimestamp.get()) > ttl.ttl) {
+                evictionSet.add(key);
+            }
+        });
+        if (evictionSet.size() > 0) {
+            valuesToClose = new HashSet<>();
+            for (K key : evictionSet) {
+                V v = internalMap.remove(key);
+                valuesToClose.add(v);
+                ttlMap.remove(key);
+            }
+        }
+        return valuesToClose;
+    }
+
     private static class TTLValue {
 
         AtomicLong lastAccessedTimestamp; // last accessed time
